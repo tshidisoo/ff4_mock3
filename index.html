@@ -821,19 +821,50 @@ function copyReport(){
   if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(text).catch(fallback); else fallback();
   var s = $('#send-status'); if (s) s.appendChild(h('span', {text:' Copied. Please send it to your teacher.'}));
 }
-function send(R){
-  setStatus(true, 'Sending your results to your teacher…');
-  var ctrl = ('AbortController' in window) ? new AbortController() : null;
-  var to = setTimeout(function(){ if (ctrl) ctrl.abort(); }, 20000);
-  var body = {
+var OUTBOX = 'tevfik-unsent-' + T.id;
+function payload(R){
+  return {
     _subject: T.title + ' — ' + R.name + ' — ' + R.auto + '/' + R.autoMax + ' auto-marked',
     student: R.name, test: T.title, score_auto: R.auto + '/' + R.autoMax, percent: R.pct + '%',
     time_used: R.elapsed ? fmt(R.elapsed) : '', message: buildReport(R)
   };
-  fetch(T.formUrl, {method:'POST', headers:{'Content-Type':'application/json', 'Accept':'application/json'}, body:JSON.stringify(body), signal: ctrl ? ctrl.signal : undefined})
-    .then(function(r){ clearTimeout(to); if (!r.ok) throw new Error('HTTP ' + r.status); setStatus(true, '✔ Your marks and corrections were sent to ' + T.teacher + '.'); })
-    .catch(function(){ clearTimeout(to); setStatus(false, 'We could not send your results. Check your internet and press “Try again”.', true); });
 }
+function post(body, onOk, onErr){
+  var ctrl = ('AbortController' in window) ? new AbortController() : null;
+  var to = setTimeout(function(){ if (ctrl) ctrl.abort(); }, 20000);
+  fetch(T.formUrl, {method:'POST', headers:{'Content-Type':'application/json', 'Accept':'application/json'}, body:JSON.stringify(body), signal: ctrl ? ctrl.signal : undefined})
+    .then(function(r){ clearTimeout(to); if (!r.ok) throw new Error('HTTP ' + r.status); onOk(); })
+    .catch(function(){ clearTimeout(to); onErr(); });
+}
+function send(R, attempt){
+  attempt = attempt || 1;
+  var body = payload(R);
+  store(OUTBOX, JSON.stringify(body));   /* keep a copy until Formspree confirms it */
+  setStatus(true, attempt === 1 ? 'Sending your results to your teacher…' : 'Sending again (try ' + attempt + ' of 3)…');
+  post(body,
+    function(){ store(OUTBOX, null); setStatus(true, '✔ Your marks and corrections were sent to ' + T.teacher + '.'); },
+    function(){
+      if (attempt < 3) { setTimeout(function(){ send(R, attempt + 1); }, 3000 * attempt); }
+      else setStatus(false, 'We could not send your results. Check your internet and press “Try again”. Do not close this page until it says sent.', true);
+    });
+}
+/* If a previous attempt never got through, offer to send it as soon as the page is opened again. */
+(function rescue(){
+  var raw = store(OUTBOX); if (!raw || RESULT) return;
+  var body; try { body = JSON.parse(raw); } catch(e){ return; }
+  var bar = h('div', {class:'status err', id:'unsent', style:'position:sticky;top:0;z-index:50;margin:0;padding:10px 14px;background:#1C1914;justify-content:center;text-align:center'});
+  document.body.insertBefore(bar, document.body.firstChild);
+  function say(t, again){
+    bar.innerHTML = ''; bar.appendChild(h('span', {text:t}));
+    if (again) bar.appendChild(h('button', {class:'btn ghost', type:'button', text:'Send now', onclick:go}));
+  }
+  function go(){
+    say('Sending the results of ' + body.student + ' (' + body.score_auto + ')…');
+    post(body, function(){ store(OUTBOX, null); bar.className = 'status okk'; say('✔ Sent. Your results from last time (' + body.student + ', ' + body.score_auto + ') have now reached ' + T.teacher + '.'); },
+      function(){ say('Your results from last time (' + body.student + ', ' + body.score_auto + ') have not been sent yet.', true); });
+  }
+  go();
+})();
 })();
 </script>
 </body>
